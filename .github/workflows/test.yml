@@ -1,22 +1,38 @@
+# 이 파일은 프로젝트 루트의 .github/workflows/test.yml 로 복사해서 사용합니다.
+# 경로 주의: .github (점 하나) / workflows (복수형 s) / test.yml
 name: 우리집 책장 CI/CD (테스트 + 빌드)
+# name: 은 GitHub Actions 탭에서 이 워크플로우를 부르는 이름.
 
 on:
   push:
+    # push: 값을 안 적으면 "모든 브랜치에 push할 때마다" 실행된다.
   pull_request:
+    # PR을 새로 만들거나, PR에 커밋을 추가로 올릴 때도 실행된다.
 
 jobs:
+  # ─────────────────────────────────────────────
+  # 1단계: CI (테스트) — 지난 시간에 완성한 부분
+  # ─────────────────────────────────────────────
   test:
     runs-on: ubuntu-latest
+    # GitHub이 무료로 빌려주는 깨끗한 Ubuntu 가상 컴퓨터(Runner).
+    # job이 끝나면 통째로 폐기된다.
 
     steps:
       - name: 1. 저장소 코드 가져오기
         uses: actions/checkout@v4
+        # actions/checkout: 이 Runner(빈 컴퓨터) 안으로 우리 저장소의 코드를 git clone 해온다.
+        # 이 스텝이 없으면 Runner는 우리 코드가 뭔지조차 모르는 완전히 빈 컴퓨터다.
 
       - name: 2. Python 설치하기
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          # 반드시 따옴표로 감싼 문자열로 써야 한다.
+          # 안 그러면 YAML이 숫자로 해석해서 버전이 잘리는 경우가 생길 수 있다.
           cache: pip
+          # requirements.txt 내용이 안 바뀌는 한 다음 실행부터는
+          # 패키지를 매번 새로 다운로드하지 않고 캐시를 재사용해서 속도가 빨라진다.
 
       - name: 3. 패키지 설치하기
         run: |
@@ -24,26 +40,72 @@ jobs:
           pip install -r requirements.txt
 
       - name: 4. 테스트 실행하기
+        # pytest 대신 python -m pytest를 쓰는 이유:
+        # tests/ 폴더에 __init__.py가 없으면 프로젝트 루트가 sys.path에 안 잡혀서
+        # 'services' 모듈을 못 찾는 ModuleNotFoundError가 날 수 있다.
         run: python -m pytest -v
 
+  # ─────────────────────────────────────────────
+  # 2단계: Build — 오늘 새로 추가한 부분
+  # (needs: test 덕분에 test가 실패하면 이 job은 아예 시작되지 않는다)
+  # ─────────────────────────────────────────────
   build:
+    # 'build'는 이 job의 이름. test job과 완전히 별개의 job이라,
+    # 원래는 서로 다른 Runner에서 각자 독립적으로/병렬로 실행되는 게 기본값이다.
+    # 하지만 바로 아래 needs: 로 이 병렬 실행을 순서 있게 바꾼다.
+
     needs: test
+    # needs: 는 "이 job을 실행하기 전에, 먼저 끝나야 하는 다른 job"을 지정한다.
+    # test가 성공(초록불)해야만 build가 시작되고,
+    # test가 하나라도 실패(빨간 X)하면 build는 아예 실행되지 않고 건너뛴다.
+    # → "테스트 안 된 코드는 이미지로도 못 만든다"는 안전장치의 핵심.
+
     runs-on: ubuntu-latest
+    # test job과 마찬가지로 새로 생성되는 깨끗한 Ubuntu Runner.
+    # test job에서 쓰던 Runner를 재사용하는 게 아니라 완전히 별개의 새 컴퓨터라는 점 주의
+    # (그래서 아래에서 checkout을 또 한 번 해야 코드가 이 Runner 안에도 존재하게 된다).
+
     if: github.ref == 'refs/heads/main'
+    # github.ref 는 "지금 이 workflow를 트리거한 브랜치가 뭔지" 담긴 값.
+    # 'refs/heads/main' 은 브랜치 이름이 정확히 main일 때를 뜻하는 GitHub 내부 표기법.
+    # → PR을 올리거나 다른 브랜치에 push할 때는 test만 돌고 build는 건너뛰고,
+    #   실제로 main에 merge(또는 main에 직접 push)됐을 때만 이미지를 만든다.
 
     steps:
       - name: 코드 가져오기
         uses: actions/checkout@v4
+        # build job은 test job과 완전히 다른 새 Runner에서 시작하기 때문에,
+        # 여기서도 다시 한번 우리 코드를 복사해와야 한다.
+        # (test job에서 이미 checkout 했다고 build job에서 자동으로 이어지지 않는다!)
 
       - name: Docker Hub 로그인
         uses: docker/login-action@v3
+        # docker/login-action: 이 Runner가 Docker Hub에 로그인해서
+        # 이미지를 push할 권한을 얻게 해준다.
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
+          # ${{ }} 는 GitHub Actions에서 "값을 여기 끼워넣어라"는 표현식 문법.
+          # secrets.DOCKER_USERNAME 은 저장소 Settings에 등록해둔 비밀값을 그대로 가져온다.
+          # 코드에 계정명을 직접 안 쓰는 이유: 저장소가 Public이라 노출되면 안 되기 때문.
           password: ${{ secrets.DOCKER_TOKEN }}
+          # ⚠️ 이 값은 Docker Hub 계정 '비밀번호'가 아니라 Access Token이어야 한다.
+          # (Docker Hub → Account Settings → Security → New Access Token,
+          #  Access permissions는 반드시 Read & Write로 발급)
+          # GitHub이 로그에 자동으로 *** 마스킹 처리해주지만,
+          # 애초에 비밀번호 자체를 여기 넣지 않는 게 원칙 (토큰은 나중에 무효화 가능).
 
       - name: 이미지 빌드 및 Docker Hub 업로드
         uses: docker/build-push-action@v6
+        # docker/build-push-action: 'docker build' + 'docker push' 두 명령어를
+        # 한 번에 대신 실행해주는 Docker 공식 액션.
         with:
           context: .
+          # context: . 는 "저장소 루트에 있는 Dockerfile을 기준으로 빌드해라"는 뜻.
+          # 우리가 로컬에서 손으로 docker build . 이라고 치던 것과 완전히 동일한 의미.
           push: true
+          # true로 설정하면 빌드만 하고 끝나는 게 아니라,
+          # 바로 위에서 로그인한 계정으로 Docker Hub에 자동으로 업로드까지 진행한다.
           tags: ${{ secrets.DOCKER_USERNAME }}/home-library:latest
+          # 이미지에 붙일 이름표(태그). '계정명/이미지이름:버전' 형식.
+          # secrets를 재사용해서 계정명을 하드코딩하지 않은 것 — 다른 학생이
+          # 자기 계정으로 그대로 복사해도 코드 수정 없이 바로 동작한다.
